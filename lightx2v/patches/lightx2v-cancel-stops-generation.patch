@@ -1,0 +1,75 @@
+diff --git a/lightx2v/server/services/inference/service.py b/lightx2v/server/services/inference/service.py
+index 20cf0e7..26334b2 100644
+--- a/lightx2v/server/services/inference/service.py
++++ b/lightx2v/server/services/inference/service.py
+@@ -2,6 +2,7 @@ from typing import Optional
+ 
+ from loguru import logger
+ 
++from ...task_manager import task_manager
+ from .worker import TorchrunInferenceWorker
+ 
+ 
+@@ -23,6 +24,9 @@ class DistributedInferenceService:
+             if not self.worker.init(args):
+                 raise RuntimeError("Worker initialization failed")
+ 
++            if self.worker.rank == 0:
++                task_manager.on_cancel_processing = self.worker.stop_current
++
+             self.is_running = True
+             logger.info(f"Rank {self.worker.rank} inference service started successfully")
+             return True
+diff --git a/lightx2v/server/services/inference/worker.py b/lightx2v/server/services/inference/worker.py
+index f5c5de8..3c31788 100644
+--- a/lightx2v/server/services/inference/worker.py
++++ b/lightx2v/server/services/inference/worker.py
+@@ -77,6 +77,7 @@ class TorchrunInferenceWorker:
+         pipeline_return = None
+         return_pipeline_result = False
+         task_id = task_data.get("task_id", "unknown")
++        self.runner.stop_signal = False
+ 
+         try:
+             if self.world_size > 1 and self.rank == 0:
+@@ -211,5 +212,9 @@ class TorchrunInferenceWorker:
+                         break
+                 continue
+ 
++    def stop_current(self):
++        # runner.check_stop() broadcasts this from rank 0 each step, so every rank aborts together.
++        self.runner.stop_signal = True
++
+     def cleanup(self):
+         self.dist_manager.cleanup()
+diff --git a/lightx2v/server/task_manager.py b/lightx2v/server/task_manager.py
+index 9c82ebe..38af5fc 100644
+--- a/lightx2v/server/task_manager.py
++++ b/lightx2v/server/task_manager.py
+@@ -5,7 +5,7 @@ from collections import OrderedDict
+ from dataclasses import dataclass, field
+ from datetime import datetime
+ from enum import Enum
+-from typing import Any, Dict, Optional
++from typing import Any, Callable, Dict, Optional
+ 
+ from loguru import logger
+ 
+@@ -64,6 +64,8 @@ class TaskManager:
+         self._task_available = threading.Condition(self._lock)
+ 
+         self._processing_lock = threading.Lock()
++        # Called when the task currently on the GPU is cancelled, to abort its denoising loop.
++        self.on_cancel_processing: Optional[Callable[[], None]] = None
+         self._current_processing_task: Optional[str] = None
+ 
+         self.total_tasks = 0
+@@ -159,6 +161,8 @@ class TaskManager:
+                 return False
+ 
+             task.stop_event.set()
++            if task.status == TaskStatus.PROCESSING and self.on_cancel_processing:
++                self.on_cancel_processing()
+             task.status = TaskStatus.CANCELLED
+             task.end_time = datetime.now()
+             task.error = "Task cancelled by user"

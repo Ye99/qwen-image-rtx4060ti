@@ -1,0 +1,7 @@
+save_results/
+*.png
+!docs/*.png
+*.log
+.prompt_history
+__pycache__/
+.venv/
