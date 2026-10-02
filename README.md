@@ -4,6 +4,22 @@ Scripts, configs and notes for running [Qwen-Image-2.1](https://github.com/QwenL
 
 The upstream configs target 24–80 GB cards. On 16 GB, the README's `enable_model_cpu_offload()` runs out of memory, and LightX2V's RTX 5090 FP8 path is Blackwell-only. This repo works around both.
 
+## Why this repo
+
+This repo is not an inference server. Inference and the REST API come from [LightX2V](https://github.com/ModelTC/LightX2V)'s own FastAPI server (`python -m lightx2v.server`): its task API (`/v1/tasks/...`) and an OpenAI-compatible `/v1/images/generations`. This repo holds the glue needed to make that server run well on 16 GB Ada cards:
+
+| Piece | Why it's needed |
+|---|---|
+| 16 GB FP8 configs | Upstream configs assume a 32 GB RTX 5090 or datacenter GPUs. They use the Blackwell-only `fp8-f16-accum` kernel and keep the text encoder and DiT on the GPU together, which runs out of memory on 16 GB. |
+| Environment setup ([`env.sh`](lightx2v/env.sh)) | The bare server command needs the venv and CUDA on `PATH`, `CUDA_HOME`, offline Hugging Face mode, and LightX2V's `base.sh` variables. |
+| Config rendering | Configs need absolute FP8 checkpoint paths. They are filled in at launch from `FP8_DIR`, so no machine-specific path is committed. |
+| Multi-GPU launch | The 2-GPU setup (Ulysses sequence parallel plus text-encoder tensor parallel) needs one process per GPU via `torchrun`. |
+| Ctrl-C shutdown | With plain torchrun, Ctrl-C hangs ~30 s during a generation and then prints a traceback. |
+| [Server patch](#lightx2v-server-patch) | Upstream, cancelling a task does not stop the GPU work, so the next request waits behind it. |
+| [Interactive client](lightx2v/prompt_loop.py) | Line editing and history, plus Ctrl-C to cancel a running generation and resubmit an edited prompt. |
+
+Other serving frameworks don't remove the need for this glue. [vLLM-Omni](https://github.com/vllm-project/vllm-omni) and [SGLang](https://github.com/sgl-project/sglang) also serve Qwen-Image-2.1 over REST, but you would still pass FP8, parallelism and memory options to fit 16 GB cards. Neither publishes consumer-GPU numbers, and vLLM-Omni's support needs a PR branch. LightX2V is the only one with consumer-GPU FP8 configs (for the RTX 5090), and they adapt to Ada with the changes above.
+
 ## Results
 
 1024×1024, 40 steps, CFG off, same prompt and seed. Times are measured after warm-up and exclude model load.
