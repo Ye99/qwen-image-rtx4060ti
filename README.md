@@ -50,31 +50,33 @@ $WORK_DIR/
 
 `WORK_DIR` defaults to the parent of this repo. Override paths with `LIGHTX2V_PATH`, `FP8_DIR`, `MODEL_PATH` and `CUDA_HOME` (see [`serve/env.sh`](serve/env.sh)). The original weights stay in the Hugging Face cache, shared by every venv.
 
-## Setup (LightX2V, FP8)
+## Setup
 
-Tested with LightX2V `8a97c759`, SageAttention `d1a57a5`, torch 2.13.0+cu130, CUDA toolkit 13.3, NVIDIA driver 615, and Python 3.12 managed by [uv](https://github.com/astral-sh/uv). Nothing is installed into the system Python.
+Tested with LightX2V `8a97c759` plus the cancel patch, SageAttention `d1a57a5`, torch 2.13.0+cu130, CUDA toolkit 13.3, NVIDIA driver 615, and Python 3.12 managed by [uv](https://github.com/astral-sh/uv). Nothing is installed into the system Python. The same steps restore the environment on a new host; everything except data (see below) is in git.
 
 ```bash
-cd "$WORK_DIR"
-# Fork = upstream 8a97c759 + the cancel patch, on branch rtx4060ti
+mkdir -p "$WORK_DIR" && cd "$WORK_DIR"     # e.g. WORK_DIR=~/p/qwen-image
+git clone https://github.com/Ye99/qwen-image-rtx4060ti.git
+
+# 1. LightX2V: fork = upstream 8a97c759 + the cancel patch, on branch rtx4060ti
 git clone -b rtx4060ti https://github.com/Ye99/LightX2V.git
 git -C LightX2V remote add upstream https://github.com/ModelTC/LightX2V.git
+git -C LightX2V remote set-url --push upstream DISABLED-do-not-push-to-upstream
 # (or: clone ModelTC/LightX2V, checkout 8a97c7591d7252ef491392e83e1eb18617ac9368,
 #  git apply ../qwen-image-rtx4060ti/serve/patches/lightx2v-cancel-stops-generation.patch)
 
-# sglang-kernel 0.4.8 (FP8 GEMM that runs on Ada) pins torch 2.13.0
+# 2. LightX2V venv at the exact tested versions (sglang-kernel 0.4.8, the FP8 GEMM that runs on Ada, pins torch 2.13.0)
 cd LightX2V && uv venv .venv --python 3.12
-echo "torch==2.13.0" > /tmp/torch-pin.txt
-uv pip install --python .venv -c /tmp/torch-pin.txt "torch==2.13.0" torchvision torchaudio \
-    "sglang-kernel==0.4.8" "flashinfer-python[cu13]==0.7.0.post1" ninja prompt_toolkit requests -e .
+uv pip install --python .venv -r ../qwen-image-rtx4060ti/serve/requirements.lock.txt
+uv pip install --python .venv --no-deps -e .
 
-# SageAttention2 (LightX2V uses its Triton int8 kernel on sm_89); PyPI only has v1
-cd "$WORK_DIR" && git clone https://github.com/thu-ml/SageAttention.git && cd SageAttention
-CUDA_HOME=/usr/local/cuda TORCH_CUDA_ARCH_LIST=8.9 MAX_JOBS=8 \
+# 3. SageAttention2 from source (LightX2V uses its Triton int8 kernel on sm_89; PyPI only has v1)
+cd "$WORK_DIR" && git clone https://github.com/thu-ml/SageAttention.git && git -C SageAttention checkout d1a57a5
+cd SageAttention && CUDA_HOME=/usr/local/cuda TORCH_CUDA_ARCH_LIST=8.9 MAX_JOBS=8 \
     uv pip install --python ../LightX2V/.venv --no-build-isolation .
 
-# Weights (33 GB) into the HF cache, then FP8 conversions (~7 GB each)
-LightX2V/.venv/bin/hf download Qwen/Qwen-Image-2.1
+# 4. Weights (33 GB) into the HF cache, then FP8 conversions (~7 GB and ~1 min each)
+cd "$WORK_DIR" && LightX2V/.venv/bin/hf download Qwen/Qwen-Image-2.1
 SRC=$(ls -d ~/.cache/huggingface/hub/models--Qwen--Qwen-Image-2.1/snapshots/*)
 cd "$WORK_DIR/LightX2V"
 export PATH=$PWD/.venv/bin:/usr/local/cuda/bin:$PATH CUDA_HOME=/usr/local/cuda TORCH_CUDA_ARCH_LIST=8.9
@@ -84,38 +86,21 @@ python tools/convert/converter.py --source $SRC/transformer --output ../models/Q
 python tools/convert/converter.py --source $SRC/text_encoder --output ../models/Qwen-Image-2.1-qwenvl-language-fp8-sgl \
     --output_name qwen_image_21_qwenvl_language_fp8_sgl --model_type qwen_image_21_text_encoder \
     --quantized --linear_type fp8 --device cuda:0 --single_file
+
+# 5. Optional: diffusers bf16 baseline venv
+cd "$WORK_DIR" && git clone https://github.com/QwenLM/Qwen-Image-2.1.git
+cd Qwen-Image-2.1 && uv venv .venv --python 3.12
+uv pip install --python .venv -r ../qwen-image-rtx4060ti/diffusers/requirements.lock.txt
 ```
 
-## Restore on a new host
-
-Everything except data is in git. Starting from an empty `$WORK_DIR` (default `~/p/qwen-image`):
-
-```bash
-mkdir -p ~/p/qwen-image && cd ~/p/qwen-image
-git clone git@github.com:Ye99/qwen-image-rtx4060ti.git
-git clone -b rtx4060ti git@github.com:Ye99/LightX2V.git
-git -C LightX2V remote add upstream https://github.com/ModelTC/LightX2V.git
-git -C LightX2V remote set-url --push upstream DISABLED-do-not-push-to-upstream
-
-# LightX2V venv at the exact tested versions, then LightX2V itself and SageAttention2 from source
-cd LightX2V && uv venv .venv --python 3.12
-uv pip install --python .venv -r ../qwen-image-rtx4060ti/serve/requirements.lock.txt
-uv pip install --python .venv --no-deps -e .
-cd .. && git clone https://github.com/thu-ml/SageAttention.git && git -C SageAttention checkout d1a57a5
-cd SageAttention && CUDA_HOME=/usr/local/cuda TORCH_CUDA_ARCH_LIST=8.9 MAX_JOBS=8 \
-    uv pip install --python ../LightX2V/.venv --no-build-isolation . && cd ..
-```
-
-Then download the weights and convert the FP8 checkpoints as in [Setup](#setup-lightx2v-fp8) (last block). Optional diffusers baseline: `git clone https://github.com/QwenLM/Qwen-Image-2.1.git`, create `Qwen-Image-2.1/.venv`, and install `diffusers/requirements.lock.txt` into it.
-
-The following are not in git; each can be regenerated:
+### What isn't in git
 
 | Data | Size | How to get it back |
 |---|---|---|
-| Qwen/Qwen-Image-2.1 weights (HF cache) | 33 GB | `hf download Qwen/Qwen-Image-2.1` |
-| FP8 checkpoints (`models/`) | 14.5 GB | the two `converter.py` commands in Setup (~1 min each) |
-| venvs, SageAttention build | ~15 GB | the commands above (~10 min) |
-| generated images, prompt history (`serve/save_results/`) | small | not reproducible except by re-running the saved prompt and seed in each `.txt`; back up separately if wanted |
+| Qwen/Qwen-Image-2.1 weights (HF cache) | 33 GB | step 4 |
+| FP8 checkpoints (`models/`) | 14.5 GB | step 4 |
+| venvs, SageAttention build | ~15 GB | steps 2, 3, 5 (~10 min) |
+| generated images, prompt history (`serve/save_results/`) | small | not reproducible except by re-running the prompt and seed saved in each `.txt`; back up separately if wanted |
 
 ## Usage
 
@@ -150,10 +135,11 @@ NGPU=2 PROMPT="a red fox in snow" SEED=1 bash serve/run_4060ti.sh   # NGPU=1 for
 
 ### Diffusers bf16 baseline
 
-[`diffusers/test_t2i.py`](diffusers/test_t2i.py) runs in a venv with `torch`, `transformers>=5.17`, diffusers from git, `accelerate`, `pillow` and `torchvision`:
+Uses the venv from [Setup](#setup) step 5:
 
 ```bash
-HF_HUB_OFFLINE=1 CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python diffusers/test_t2i.py
+HF_HUB_OFFLINE=1 CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    "$WORK_DIR"/Qwen-Image-2.1/.venv/bin/python diffusers/test_t2i.py
 ```
 
 ## What was needed on 16 GB cards
@@ -181,7 +167,7 @@ git rebase upstream/main            # replays the patch commit on top of the lat
 git push --force-with-lease origin rtx4060ti
 ```
 
-Re-check the [setup](#setup-lightx2v-fp8) pins after a rebase. Upstream may move past the torch 2.13 / sglang-kernel 0.4.8 combination tested here.
+Re-check the [setup](#setup) pins after a rebase. Upstream may move past the torch 2.13 / sglang-kernel 0.4.8 combination tested here.
 
 ## License
 
