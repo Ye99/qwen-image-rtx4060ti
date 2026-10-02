@@ -86,6 +86,37 @@ python tools/convert/converter.py --source $SRC/text_encoder --output ../models/
     --quantized --linear_type fp8 --device cuda:0 --single_file
 ```
 
+## Restore on a new host
+
+Everything except data is in git. Starting from an empty `$WORK_DIR` (default `~/p/qwen-image`):
+
+```bash
+mkdir -p ~/p/qwen-image && cd ~/p/qwen-image
+git clone git@github.com:Ye99/qwen-image-rtx4060ti.git
+git clone -b rtx4060ti git@github.com:Ye99/LightX2V.git
+git -C LightX2V remote add upstream https://github.com/ModelTC/LightX2V.git
+git -C LightX2V remote set-url --push upstream DISABLED-do-not-push-to-upstream
+
+# LightX2V venv at the exact tested versions, then LightX2V itself and SageAttention2 from source
+cd LightX2V && uv venv .venv --python 3.12
+uv pip install --python .venv -r ../qwen-image-rtx4060ti/serve/requirements.lock.txt
+uv pip install --python .venv --no-deps -e .
+cd .. && git clone https://github.com/thu-ml/SageAttention.git && git -C SageAttention checkout d1a57a5
+cd SageAttention && CUDA_HOME=/usr/local/cuda TORCH_CUDA_ARCH_LIST=8.9 MAX_JOBS=8 \
+    uv pip install --python ../LightX2V/.venv --no-build-isolation . && cd ..
+```
+
+Then download the weights and convert the FP8 checkpoints as in [Setup](#setup-lightx2v-fp8) (last block). Optional diffusers baseline: `git clone https://github.com/QwenLM/Qwen-Image-2.1.git`, create `Qwen-Image-2.1/.venv`, and install `diffusers/requirements.lock.txt` into it.
+
+The following are not in git; each can be regenerated:
+
+| Data | Size | How to get it back |
+|---|---|---|
+| Qwen/Qwen-Image-2.1 weights (HF cache) | 33 GB | `hf download Qwen/Qwen-Image-2.1` |
+| FP8 checkpoints (`models/`) | 14.5 GB | the two `converter.py` commands in Setup (~1 min each) |
+| venvs, SageAttention build | ~15 GB | the commands above (~10 min) |
+| generated images, prompt history (`serve/save_results/`) | small | not reproducible except by re-running the saved prompt and seed in each `.txt`; back up separately if wanted |
+
 ## Usage
 
 ### Interactive (recommended)
