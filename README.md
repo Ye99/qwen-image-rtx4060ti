@@ -56,8 +56,11 @@ Tested with LightX2V `8a97c759`, SageAttention `d1a57a5`, torch 2.13.0+cu130, CU
 
 ```bash
 cd "$WORK_DIR"
-git clone https://github.com/ModelTC/LightX2V.git && git -C LightX2V checkout 8a97c7591d7252ef491392e83e1eb18617ac9368
-git -C LightX2V apply ../qwen-image-rtx4060ti/serve/patches/lightx2v-cancel-stops-generation.patch
+# Fork = upstream 8a97c759 + the cancel patch, on branch rtx4060ti
+git clone -b rtx4060ti https://github.com/Ye99/LightX2V.git
+git -C LightX2V remote add upstream https://github.com/ModelTC/LightX2V.git
+# (or: clone ModelTC/LightX2V, checkout 8a97c7591d7252ef491392e83e1eb18617ac9368,
+#  git apply ../qwen-image-rtx4060ti/serve/patches/lightx2v-cancel-stops-generation.patch)
 
 # sglang-kernel 0.4.8 (FP8 GEMM that runs on Ada) pins torch 2.13.0
 cd LightX2V && uv venv .venv --python 3.12
@@ -134,9 +137,20 @@ HF_HUB_OFFLINE=1 CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segme
 
 ## LightX2V server patch
 
-[`serve/patches/lightx2v-cancel-stops-generation.patch`](serve/patches/lightx2v-cancel-stops-generation.patch) fixes cancelling. Upstream, `DELETE /v1/tasks/{id}` (and a client disconnecting from `/sync`) only marks the task cancelled while the GPUs keep generating, so the next request waits behind it. The patch sets the runner's `stop_signal` when the task being processed is cancelled. `runner.check_stop()` already broadcasts that flag from rank 0 every step, so all ranks abort together and the worker returns `failed` cleanly.
+[`serve/patches/lightx2v-cancel-stops-generation.patch`](serve/patches/lightx2v-cancel-stops-generation.patch) (also committed on the [`rtx4060ti` branch of Ye99/LightX2V](https://github.com/Ye99/LightX2V/tree/rtx4060ti)) fixes cancelling. Upstream, `DELETE /v1/tasks/{id}` (and a client disconnecting from `/sync`) only marks the task cancelled while the GPUs keep generating, so the next request waits behind it. The patch sets the runner's `stop_signal` when the task being processed is cancelled. `runner.check_stop()` already broadcasts that flag from rank 0 every step, so all ranks abort together and the worker returns `failed` cleanly.
 
 `serve_4060ti.sh` also replaces torchrun's Ctrl-C handling. That handling hangs ~30 s when a request is in flight, because rank 1 exits immediately while rank 0 waits in an NCCL collective, and then prints a traceback. The script instead cancels running tasks, drops torchrun, SIGTERMs the workers by PID (torchrun starts each in its own session), and SIGKILLs any worker still alive after `STOP_TIMEOUT`.
+
+### Updating LightX2V while keeping the patch
+
+```bash
+cd "$WORK_DIR/LightX2V"
+git fetch upstream
+git rebase upstream/main            # replays the patch commit on top of the latest upstream
+git push --force-with-lease origin rtx4060ti
+```
+
+Re-check the [setup](#setup-lightx2v-fp8) pins after a rebase. Upstream may move past the torch 2.13 / sglang-kernel 0.4.8 combination tested here.
 
 ## License
 
