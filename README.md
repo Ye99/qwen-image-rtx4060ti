@@ -11,12 +11,12 @@ This repo is not an inference server. Inference and the REST API come from [Ligh
 | Piece | Why it's needed |
 |---|---|
 | 16 GB FP8 configs | Upstream configs assume a 32 GB RTX 5090 or datacenter GPUs. They use the Blackwell-only `fp8-f16-accum` kernel and keep the text encoder and DiT on the GPU together, which runs out of memory on 16 GB. |
-| Environment setup ([`env.sh`](lightx2v/env.sh)) | The bare server command needs the venv and CUDA on `PATH`, `CUDA_HOME`, offline Hugging Face mode, and LightX2V's `base.sh` variables. |
+| Environment setup ([`env.sh`](serve/env.sh)) | The bare server command needs the venv and CUDA on `PATH`, `CUDA_HOME`, offline Hugging Face mode, and LightX2V's `base.sh` variables. |
 | Config rendering | Configs need absolute FP8 checkpoint paths. They are filled in at launch from `FP8_DIR`, so no machine-specific path is committed. |
 | Multi-GPU launch | The 2-GPU setup (Ulysses sequence parallel plus text-encoder tensor parallel) needs one process per GPU via `torchrun`. |
 | Ctrl-C shutdown | With plain torchrun, Ctrl-C hangs ~30 s during a generation and then prints a traceback. |
 | [Server patch](#lightx2v-server-patch) | Upstream, cancelling a task does not stop the GPU work, so the next request waits behind it. |
-| [Interactive client](lightx2v/prompt_loop.py) | Line editing and history, plus Ctrl-C to cancel a running generation and resubmit an edited prompt. |
+| [Interactive client](serve/prompt_loop.py) | Line editing and history, plus Ctrl-C to cancel a running generation and resubmit an edited prompt. |
 
 Other serving frameworks don't remove the need for this glue. [vLLM-Omni](https://github.com/vllm-project/vllm-omni) and [SGLang](https://github.com/sgl-project/sglang) also serve Qwen-Image-2.1 over REST, but you would still pass FP8, parallelism and memory options to fit 16 GB cards. Neither publishes consumer-GPU numbers, and vLLM-Omni's support needs a PR branch. LightX2V is the only one with consumer-GPU FP8 configs (for the RTX 5090), and they adapt to Ada with the changes above.
 
@@ -41,12 +41,14 @@ Diffusers and LightX2V turn the same seed into different starting noise, so the 
 ```
 $WORK_DIR/
 ├── qwen-image-rtx4060ti/   # this repo
-├── LightX2V/               # LightX2V clone + .venv (patched)
+│   ├── serve/              #   launch scripts, 16 GB configs, prompt client, LightX2V patch
+│   └── diffusers/          #   bf16 baseline script
+├── LightX2V/               # upstream LightX2V framework clone + .venv (patched); serve/ scripts run it
 ├── Qwen-Image-2.1/         # optional: official repo + .venv for the diffusers baseline
 └── models/                 # FP8 checkpoints converted from the HF weights
 ```
 
-`WORK_DIR` defaults to the parent of this repo. Override paths with `LIGHTX2V_PATH`, `FP8_DIR`, `MODEL_PATH` and `CUDA_HOME` (see [`lightx2v/env.sh`](lightx2v/env.sh)). The original weights stay in the Hugging Face cache, shared by every venv.
+`WORK_DIR` defaults to the parent of this repo. Override paths with `LIGHTX2V_PATH`, `FP8_DIR`, `MODEL_PATH` and `CUDA_HOME` (see [`serve/env.sh`](serve/env.sh)). The original weights stay in the Hugging Face cache, shared by every venv.
 
 ## Setup (LightX2V, FP8)
 
@@ -55,7 +57,7 @@ Tested with LightX2V `8a97c759`, SageAttention `d1a57a5`, torch 2.13.0+cu130, CU
 ```bash
 cd "$WORK_DIR"
 git clone https://github.com/ModelTC/LightX2V.git && git -C LightX2V checkout 8a97c7591d7252ef491392e83e1eb18617ac9368
-git -C LightX2V apply ../qwen-image-rtx4060ti/lightx2v/patches/lightx2v-cancel-stops-generation.patch
+git -C LightX2V apply ../qwen-image-rtx4060ti/serve/patches/lightx2v-cancel-stops-generation.patch
 
 # sglang-kernel 0.4.8 (FP8 GEMM that runs on Ada) pins torch 2.13.0
 cd LightX2V && uv venv .venv --python 3.12
@@ -88,13 +90,13 @@ python tools/convert/converter.py --source $SRC/text_encoder --output ../models/
 Terminal 1, the server. It compiles once (~60–120 s), listens on 127.0.0.1:8000, and Ctrl-C stops it within a few seconds:
 
 ```bash
-bash lightx2v/serve_4060ti.sh
+bash serve/serve_4060ti.sh
 ```
 
 Terminal 2, the prompt client:
 
 ```bash
-"$WORK_DIR"/LightX2V/.venv/bin/python lightx2v/prompt_loop.py
+"$WORK_DIR"/LightX2V/.venv/bin/python serve/prompt_loop.py
 ```
 
 ```text
@@ -104,12 +106,12 @@ prompt> seed=7 size=3840x2176 a scuba diver exploring a reef with fish in Florid
 - `seed=` and `size=WIDTHxHEIGHT` prefixes are optional; the default is a random seed at 1024×1024. Each side is rounded down to a multiple of 32.
 - **Line editing:** arrows, Home/End and Backspace work. ↑/↓ recall history, which is saved between sessions. Ctrl-R searches history, and → accepts the grey suggestion.
 - **Ctrl-C while generating** cancels the task on the server, which frees the GPUs within one denoising step. The prompt comes back on the line for editing; press Enter to resubmit.
-- Images and a `.txt` file with each prompt, seed and size go to `lightx2v/save_results/interactive/`. The server writes them directly, so the client must run on the same machine.
+- Images and a `.txt` file with each prompt, seed and size go to `serve/save_results/interactive/`. The server writes them directly, so the client must run on the same machine.
 
 ### One-shot
 
 ```bash
-NGPU=2 PROMPT="a red fox in snow" SEED=1 bash lightx2v/run_4060ti.sh   # NGPU=1 for a single card
+NGPU=2 PROMPT="a red fox in snow" SEED=1 bash serve/run_4060ti.sh   # NGPU=1 for a single card
 ```
 
 ### Diffusers bf16 baseline
@@ -132,7 +134,7 @@ HF_HUB_OFFLINE=1 CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segme
 
 ## LightX2V server patch
 
-[`lightx2v/patches/lightx2v-cancel-stops-generation.patch`](lightx2v/patches/lightx2v-cancel-stops-generation.patch) fixes cancelling. Upstream, `DELETE /v1/tasks/{id}` (and a client disconnecting from `/sync`) only marks the task cancelled while the GPUs keep generating, so the next request waits behind it. The patch sets the runner's `stop_signal` when the task being processed is cancelled. `runner.check_stop()` already broadcasts that flag from rank 0 every step, so all ranks abort together and the worker returns `failed` cleanly.
+[`serve/patches/lightx2v-cancel-stops-generation.patch`](serve/patches/lightx2v-cancel-stops-generation.patch) fixes cancelling. Upstream, `DELETE /v1/tasks/{id}` (and a client disconnecting from `/sync`) only marks the task cancelled while the GPUs keep generating, so the next request waits behind it. The patch sets the runner's `stop_signal` when the task being processed is cancelled. `runner.check_stop()` already broadcasts that flag from rank 0 every step, so all ranks abort together and the worker returns `failed` cleanly.
 
 `serve_4060ti.sh` also replaces torchrun's Ctrl-C handling. That handling hangs ~30 s when a request is in flight, because rank 1 exits immediately while rank 0 waits in an NCCL collective, and then prints a traceback. The script instead cancels running tasks, drops torchrun, SIGTERMs the workers by PID (torchrun starts each in its own session), and SIGKILLs any worker still alive after `STOP_TIMEOUT`.
 

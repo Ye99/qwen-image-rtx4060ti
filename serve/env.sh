@@ -21,6 +21,6 @@ source "${lightx2v_path}/scripts/base/base.sh"
 render_config() {
     local out
     out=$(mktemp --suffix=.json)
-    sed "s#__FP8_DIR__#${FP8_DIR}#g" "$REPO_DIR/lightx2v/configs/$1" > "$out"
+    sed "s#__FP8_DIR__#${FP8_DIR}#g" "$REPO_DIR/serve/configs/$1" > "$out"
     echo "$out"
 }

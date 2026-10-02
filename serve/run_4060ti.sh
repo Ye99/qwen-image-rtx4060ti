@@ -19,4 +19,4 @@ trap 'rm -f "$config"' EXIT
     --prompt "${PROMPT:-A capybara wearing a wizard hat sits at a desk, reading a book by candlelight. Oil painting style, delicate brushwork, warm tones.}" \
     --size "${HEIGHT:-1024}" "${WIDTH:-1024}" \
     --seed "${SEED:-42}" \
-    --save_result_path "${SAVE_RESULT_PATH:-${REPO_DIR}/lightx2v/save_results/t2i_4060ti_${NGPU}gpu.png}"
+    --save_result_path "${SAVE_RESULT_PATH:-${REPO_DIR}/serve/save_results/t2i_4060ti_${NGPU}gpu.png}"
