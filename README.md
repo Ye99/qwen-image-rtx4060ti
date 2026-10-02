@@ -2,7 +2,7 @@
 
 Scripts, configs and notes for running [Qwen-Image-2.1](https://github.com/QwenLM/Qwen-Image-2.1) text-to-image on consumer 16 GB GPUs: two RTX 4060 Ti cards (Ada, sm_89, PCIe only). It includes an interactive prompt client and a [LightX2V](https://github.com/ModelTC/LightX2V) server patch so a cancelled request really stops the GPU work.
 
-The upstream configs target 24–80 GB cards. On 16 GB, the README's `enable_model_cpu_offload()` runs out of memory, and LightX2V's RTX 5090 FP8 path is Blackwell-only. This repo works around both.
+The upstream configs target 24–80 GB cards. On 16 GB, the `enable_model_cpu_offload()` tip in the [Qwen-Image-2.1 README](https://github.com/QwenLM/Qwen-Image-2.1#readme) runs out of memory, and LightX2V's RTX 5090 FP8 path is Blackwell-only. This repo works around both.
 
 ## Why this repo
 
@@ -122,7 +122,7 @@ HF_HUB_OFFLINE=1 CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segme
 
 ## What was needed on 16 GB cards
 
-- **Diffusers needs `torchvision`.** The README doesn't list it; without it the Qwen3-VL processor fails to load.
+- **Diffusers needs `torchvision`.** The Requirements section of the [Qwen-Image-2.1 README](https://github.com/QwenLM/Qwen-Image-2.1#readme) doesn't list it. Without it, loading the pipeline fails with `Qwen3VLVideoProcessor requires the Torchvision library`.
 - **`enable_model_cpu_offload()` runs out of memory.** The bf16 text encoder alone is 16.3 GiB. Use group offload instead: block-level for the transformer and leaf-level for the text encoder. Block-level grouping never releases the text encoder's blocks.
 - **`fp8-f16-accum` is SM120-only.** LightX2V's RTX 5090 configs use it. On Ada use `fp8-sgl` with a **full-range** FP8 checkpoint: convert without `--quantization_profile`. The f16-accum profile narrows weights to qmax 14.
 - **The FP8 DiT (6.8 GB) and FP8 text encoder (7.7 GB) don't fit on one card with activations.**
