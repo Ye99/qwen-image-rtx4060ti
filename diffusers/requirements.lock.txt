@@ -42,7 +42,7 @@ nvidia-nvjitlink==13.4.92
 nvidia-nvshmem-cu13==3.4.5
 nvidia-nvtx==13.0.85
 packaging==26.3
-pillow==12.3.0
+pillow==13.0.0
 psutil==7.2.2
 pygments==2.21.0
 pyyaml==6.0.3
